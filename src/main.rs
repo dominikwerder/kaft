@@ -14,7 +14,8 @@ struct ConnectHandler {
 }
 
 impl ConnectHandler {
-  fn _new(on_connect: oneshot::Sender<i32>) -> Self {
+  #[allow(unused)]
+  fn new(on_connect: oneshot::Sender<i32>) -> Self {
     Self {
       on_connect: Mutex::new(Some(on_connect)),
     }
@@ -48,8 +49,17 @@ struct Ctx {
 }
 
 impl rdkafka::client::ClientContext for Ctx {
+  fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
+    println!("level: {:?}  fac: {:?}  message: {:?}", level, fac, message);
+  }
   fn error(&self, error: rdkafka::error::KafkaError, reason: &str) {
     println!("error: {:?}  {}", error, reason);
+  }
+}
+
+impl rdkafka::consumer::ConsumerContext for Ctx {
+  fn pre_rebalance<'a>(&self, rebalance: &rdkafka::consumer::Rebalance<'a>) {
+    println!("pre_rebalance");
   }
 }
 
@@ -99,6 +109,23 @@ fn cmd_produce(m: &clap::ArgMatches) {
   kafka_produce(broker, topic, &buf);
 }
 
+
+fn kafka_consume(broker: &str, topic: &str) {
+  let mut conf = rdkafka::config::ClientConfig::new();
+  conf.set("api.version.request", "true");
+  conf.set("metadata.broker.list", broker);
+  use rdkafka::config::FromClientConfigAndContext;
+  let c = rdkafka::consumer::stream_consumer::StreamConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
+}
+
+fn cmd_consume(m: &clap::ArgMatches) {
+  println!("consume");
+  let broker = m.value_of("b").unwrap();
+  let topic = m.value_of("t").unwrap();
+  println!("broker: {}  topic: {}", broker, topic);
+  kafka_consume(broker, topic);
+}
+
 fn main() {
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
@@ -113,6 +140,9 @@ fn main() {
     match c {
       "p" => {
         cmd_produce(&m);
+      }
+      "c" => {
+        cmd_consume(&m);
       }
       _ => panic!()
     }
