@@ -1,0 +1,9 @@
+[package]
+name = "kaft"
+version = "0.0.1"
+authors = ["Dominik Werder <dominik.werder@gmail.com>"]
+
+[dependencies]
+futures = "0.1.25"
+zookeeper = "0.5.5"
+rdkafka = "0.17.0"
