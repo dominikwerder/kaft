@@ -1,18 +1,20 @@
+extern crate clap;
 extern crate futures;
 extern crate zookeeper;
 extern crate rdkafka;
 
-use std::cell::RefCell;
-use std::sync::{Mutex, RwLock};
+//use std::cell::RefCell;
+use std::sync::{Mutex};
 use futures::Future;
 use futures::sync::oneshot;
 
+#[allow(unused)]
 struct ConnectHandler {
   on_connect: Mutex<Option<oneshot::Sender<i32>>>,
 }
 
 impl ConnectHandler {
-  fn new(on_connect: oneshot::Sender<i32>) -> Self {
+  fn _new(on_connect: oneshot::Sender<i32>) -> Self {
     Self {
       on_connect: Mutex::new(Some(on_connect)),
     }
@@ -47,7 +49,7 @@ struct Ctx {
 
 impl rdkafka::client::ClientContext for Ctx {
   fn error(&self, error: rdkafka::error::KafkaError, reason: &str) {
-    println!("error: {}", reason);
+    println!("error: {:?}  {}", error, reason);
   }
 }
 
@@ -71,4 +73,48 @@ impl rdkafka::client::ClientContext for Ctx {
   let partition = 0;
   let watermarks = client.fetch_watermarks(topic, partition, timeout).unwrap();
   println!("watermarks: {:?}", watermarks);
+}
+
+
+fn kafka_produce(broker: &str, topic: &str, data: &[u8]) {
+  let mut conf = rdkafka::config::ClientConfig::new();
+  conf.set("api.version.request", "true");
+  conf.set("metadata.broker.list", broker);
+  let record = rdkafka::producer::future_producer::FutureRecord::to(topic)
+  .key("")
+  .payload(data);
+  use rdkafka::config::FromClientConfigAndContext;
+  let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx {}).unwrap();
+  p.send(record, 0).wait().unwrap().unwrap();
+}
+
+fn cmd_produce(m: &clap::ArgMatches) {
+  println!("produce");
+  let broker = m.value_of("b").unwrap();
+  let topic = m.value_of("t").unwrap();
+  let mut buf = vec![];
+  use std::io::Read;
+  std::io::stdin().read_to_end(&mut buf).unwrap();
+  println!("broker: {}  topic: {}  len: {}", broker, topic, buf.len());
+  kafka_produce(broker, topic, &buf);
+}
+
+fn main() {
+  let app = clap::App::new("kaft")
+  .author("Dominik Werder <dominik.werder@gmail.com>")
+  .args_from_usage("
+    -c=[CMD]
+    -b=[BROKER]
+    -t=[TOPIC]
+  ");
+  let m = app.get_matches();
+  println!("{:?}", m);
+  if let Some(c) = m.value_of("c") {
+    match c {
+      "p" => {
+        cmd_produce(&m);
+      }
+      _ => panic!()
+    }
+  }
 }
