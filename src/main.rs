@@ -280,6 +280,7 @@ fn cmd_cat_payload(m: &clap::ArgMatches) {
             //println!("pos: {:?}", c.position().unwrap());
             use std::io::Write;
             std::io::stdout().write(m.payload().unwrap()).unwrap();
+            break;
           }
           Err(KafkaError::PartitionEOF(_p)) => {
             //println!("EOF p: {}", p);
