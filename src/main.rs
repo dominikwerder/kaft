@@ -149,15 +149,27 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
         None => "NA".into()
       },
     );
-    let datastring = match self.0.payload().map(|x| String::from_utf8_lossy(x)) {
-      Some(x) => x.replace("\n", "").replace(" ", ""),
+    let datastring = match self.0.payload() {
+      Some(x) => {
+        let data = x.iter().map(|x| char::from(*x)).map(|x| {
+          if x.is_ascii() && !x.is_ascii_control() { x } else { '.' }
+          //let mut buf = [0u8; 4];
+          //x.encode_utf8(&mut buf);
+          //buf[0]
+        })
+        .filter(|x| !x.is_whitespace())
+        ;
+        use std::iter::FromIterator;
+        let s1 = String::from_iter(data);
+        s1
+      }
       None => "None".into()
     };
     write!(f, "{} {:.w$}", s1, datastring, w = columns - s1.len() - 1)
   }
 }
 
-fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
+fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("api.version.request", "true");
   conf.set("group.id", "a");
@@ -199,6 +211,7 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
   c.assign(&pl).unwrap();
   //let pos = c.position().unwrap();
   //println!("pos: {:?}", pos);
+  let mut count = 0;
   loop {
     match c.poll(timeout) {
       Some(mm) => {
@@ -207,10 +220,12 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
             //println!("m: {:?}  {:?}", m.timestamp(), m.key().map(|x|x.len()));
             //println!("pos: {:?}", c.position().unwrap());
             println!("{}", MsgShortView(&m));
+            count += 1;
+            if count >= nmsg { break }
           }
           Err(KafkaError::PartitionEOF(_p)) => {
             //println!("EOF p: {}", p);
-            break;
+            break
           }
           Err(x) => panic!(x)
         }
@@ -223,12 +238,13 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
 fn cmd_consume(m: &clap::ArgMatches) {
   let broker = m.value_of("broker").unwrap();
   let topic = m.value_of("topic").unwrap();
+  let nmsg = m.value_of("nmsg").map_or(1u64, |x|x.parse().unwrap());
   let rewind = match m.value_of("rewind") {
     Some(x) => x.parse::<i64>().unwrap(),
-    None => 8
+    None => 0
   };
   println!("broker: {}  topic: {}", broker, topic);
-  kafka_consume(broker, topic, rewind);
+  kafka_consume(broker, topic, rewind, nmsg);
 }
 
 fn cmd_cat_payload(m: &clap::ArgMatches) {
@@ -329,6 +345,7 @@ fn main() {
     -r,--rewind=[N]
     -p,--partition=[N]
     -o,--offset=[N]
+    --nmsg=[N]
   ");
   let m = app.get_matches();
   //println!("{:?}", m);
