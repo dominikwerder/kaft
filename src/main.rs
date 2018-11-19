@@ -113,8 +113,8 @@ fn kafka_produce(broker: &str, topic: &str, data: &[u8]) {
 
 fn cmd_produce(m: &clap::ArgMatches) {
   println!("produce");
-  let broker = m.value_of("b").unwrap();
-  let topic = m.value_of("t").unwrap();
+  let broker = m.value_of("broker").unwrap();
+  let topic = m.value_of("topic").unwrap();
   let mut buf = vec![];
   use std::io::Read;
   std::io::stdin().read_to_end(&mut buf).unwrap();
