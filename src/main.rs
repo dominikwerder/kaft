@@ -242,11 +242,11 @@ fn cmd_metadata(m: &clap::ArgMatches) {
     if topic.name() == "__consumer_offsets" {
       continue;
     }
-    println!("{}", topic.name());
-    for p in topic.partitions() {
+    let a: Vec<_> = topic.partitions().iter().map(|p| {
       let w = client.fetch_watermarks(topic.name(), p.id(), timeout).unwrap();
-      println!(" {:3.3} {:?}", p.id(), w);
-    }
+      format!("{:?} {:?}", p.id(), w)
+    }).collect();
+    println!("{}  {}", topic.name(), a.join(", "));
   }
 }
 
