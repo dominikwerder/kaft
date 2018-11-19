@@ -152,7 +152,7 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
   }
 }
 
-fn kafka_consume(broker: &str, topic: &str) {
+fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("api.version.request", "true");
   conf.set("group.id", "a");
@@ -184,7 +184,8 @@ fn kafka_consume(broker: &str, topic: &str) {
     for p in t.partitions() {
       let w = c.fetch_watermarks(t.name(), p.id(), timeout).unwrap();
       // Beginning, End, Stored, Invalid, Offset(i64)
-      pl.add_partition_offset(t.name(), p.id(), Offset::Offset((w.1 - 8).max(0)));
+      let ix = if w.1 >= rewind { w.1 - rewind } else { 0 };
+      pl.add_partition_offset(t.name(), p.id(), Offset::Offset(ix));
       println!("w: {:?}", w);
     }
   }
@@ -214,23 +215,52 @@ fn kafka_consume(broker: &str, topic: &str) {
 }
 
 fn cmd_consume(m: &clap::ArgMatches) {
-  println!("consume");
   let broker = m.value_of("b").unwrap();
   let topic = m.value_of("t").unwrap();
+  let rewind = match m.value_of("rewind") {
+    Some(x) => x.parse::<i64>().unwrap(),
+    None => 8
+  };
   println!("broker: {}  topic: {}", broker, topic);
-  kafka_consume(broker, topic);
+  kafka_consume(broker, topic, rewind);
+}
+
+fn cmd_metadata(m: &clap::ArgMatches) {
+  let broker = m.value_of("b").unwrap();
+  let mut conf = rdkafka::config::ClientConfig::new();
+  conf.set("metadata.broker.list", broker);
+  let client = rdkafka::client::Client::new(
+    &conf,
+    conf.create_native_config().unwrap(),
+    rdkafka::types::RDKafkaType::RD_KAFKA_CONSUMER,
+    Ctx {},
+  ).unwrap();
+
+  let timeout = Some(std::time::Duration::from_millis(1000));
+  let metadata = client.fetch_metadata(None, timeout).unwrap();
+  for topic in metadata.topics() {
+    if topic.name() == "__consumer_offsets" {
+      continue;
+    }
+    println!("{}", topic.name());
+    for p in topic.partitions() {
+      let w = client.fetch_watermarks(topic.name(), p.id(), timeout).unwrap();
+      println!(" {:3.3} {:?}", p.id(), w);
+    }
+  }
 }
 
 fn main() {
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
   .args_from_usage("
-    -c=[CMD]  'p, c'
+    -c=[CMD]  'p, c, m'
     -b=[BROKER]
     -t=[TOPIC]
+    -r, --rewind=[N]
   ");
   let m = app.get_matches();
-  println!("{:?}", m);
+  //println!("{:?}", m);
   if let Some(c) = m.value_of("c") {
     match c {
       "p" => {
@@ -238,6 +268,9 @@ fn main() {
       }
       "c" => {
         cmd_consume(&m);
+      }
+      "m" => {
+        cmd_metadata(&m);
       }
       _ => panic!()
     }
