@@ -2,6 +2,8 @@ extern crate clap;
 extern crate futures;
 extern crate zookeeper;
 extern crate rdkafka;
+extern crate ncurses;
+extern crate terminal_size;
 
 //use std::cell::RefCell;
 use std::sync::{Mutex};
@@ -124,8 +126,10 @@ struct MsgShortView<'a, H: Headers, M: 'a + Message<Headers=H>>(&'a M);
 
 impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortView<'a, H, M> {
   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    let columns = terminal_size::terminal_size().unwrap().0 .0 as usize;
+    //println!("columns: {}", columns);
     let _hs: Vec<_> = (0..64).into_iter().map(|i| self.0.headers().map(|hs| hs.get(i))).filter(|x| x.is_some()).map(|x| x.unwrap()).collect();
-    write!(f, "p/o: {}/{} {} {} {}",
+    let s1 = format!("p/o: {}/{} {} {}",
       //self.0.topic(),
       self.0.partition(), self.0.offset(),
       //self.0.key().map(|x|x.len()),
@@ -139,11 +143,12 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
         Some(x) => format!("{:4.4}", x.len()),
         None => "NA".into()
       },
-      match self.0.payload().map(|x| String::from_utf8_lossy(&x[..x.len().min(64)])) {
-        Some(x) => x.replace("\n", "").replace(" ", ""),
-        None => "None".into()
-      },
-    )
+    );
+    let datastring = match self.0.payload().map(|x| String::from_utf8_lossy(x)) {
+      Some(x) => x.replace("\n", "").replace(" ", ""),
+      None => "None".into()
+    };
+    write!(f, "{} {:.w$}", s1, datastring, w = columns - s1.len() - 1)
   }
 }
 
