@@ -145,7 +145,7 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
       },
       //hs,
       match self.0.payload() {
-        Some(x) => format!("{:4.4}", x.len()),
+        Some(x) => format!("{:6.6}", x.len()),
         None => "NA".into()
       },
     );
