@@ -4,6 +4,7 @@ extern crate zookeeper;
 extern crate rdkafka;
 extern crate ncurses;
 extern crate terminal_size;
+extern crate chrono;
 
 //use std::cell::RefCell;
 use std::sync::{Mutex};
@@ -135,7 +136,11 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
       //self.0.key().map(|x|x.len()),
       match self.0.timestamp() {
         Timestamp::NotAvailable => "NT".to_string(),
-        Timestamp::CreateTime(t) => format!("ct {:13.13}", t),
+        Timestamp::CreateTime(t) => {
+          let secs = (t / 1000) as i64;
+          let ts = chrono::TimeZone::timestamp(&chrono::Utc, secs, ((t - 1000 * secs) * 1_000_000) as u32);
+          format!("ct {}", ts.format("%Y-%m-%d %H:%M"))
+        }
         Timestamp::LogAppendTime(t) => format!("at {:13.13}", t),
       },
       //hs,
@@ -185,14 +190,15 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
       let w = c.fetch_watermarks(t.name(), p.id(), timeout).unwrap();
       // Beginning, End, Stored, Invalid, Offset(i64)
       let ix = if w.1 >= rewind { w.1 - rewind } else { 0 };
-      pl.add_partition_offset(t.name(), p.id(), Offset::Offset(ix));
-      println!("w: {:?}", w);
+      let off = Offset::Offset(ix);
+      pl.add_partition_offset(t.name(), p.id(), off);
+      println!("  t: {}  p: {}  w: {:?}  off: {:?}", t.name(), p.id(), w, off);
     }
   }
   //.subscribe(&[topic]).unwrap();
   c.assign(&pl).unwrap();
-  let pos = c.position().unwrap();
-  println!("pos: {:?}", pos);
+  //let pos = c.position().unwrap();
+  //println!("pos: {:?}", pos);
   loop {
     match c.poll(timeout) {
       Some(mm) => {
@@ -202,21 +208,21 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64) {
             //println!("pos: {:?}", c.position().unwrap());
             println!("{}", MsgShortView(&m));
           }
-          Err(KafkaError::PartitionEOF(x)) => {
-            println!("EOF x: {}", x);
+          Err(KafkaError::PartitionEOF(_p)) => {
+            //println!("EOF p: {}", p);
             break;
           }
           Err(x) => panic!(x)
         }
       }
-      None => println!("Poll returned None")
+      None => panic!("Poll returned None")
     }
   }
 }
 
 fn cmd_consume(m: &clap::ArgMatches) {
-  let broker = m.value_of("b").unwrap();
-  let topic = m.value_of("t").unwrap();
+  let broker = m.value_of("broker").unwrap();
+  let topic = m.value_of("topic").unwrap();
   let rewind = match m.value_of("rewind") {
     Some(x) => x.parse::<i64>().unwrap(),
     None => 8
@@ -225,8 +231,70 @@ fn cmd_consume(m: &clap::ArgMatches) {
   kafka_consume(broker, topic, rewind);
 }
 
+fn cmd_cat_payload(m: &clap::ArgMatches) {
+  let broker = m.value_of("broker").unwrap();
+  let topic = m.value_of("topic").unwrap();
+  let partition = m.value_of("partition").unwrap().parse::<i32>().unwrap();
+  let offset = m.value_of("offset").unwrap().parse::<i64>().unwrap();
+  //println!("cat_payload  broker: {}  topic: {}  partition: {}  offset: {}", broker, topic, partition, offset);
+  let mut conf = rdkafka::config::ClientConfig::new();
+  conf.set("api.version.request", "true");
+  conf.set("group.id", "a");
+  conf.set("metadata.broker.list", broker);
+  use rdkafka::config::FromClientConfigAndContext;
+  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();  
+  let timeout = Some(std::time::Duration::from_millis(10000));
+  let topics = [topic];
+  let metas: Vec<_> = topics.iter().map(|x| {
+    let m = c.fetch_metadata(Some(x), timeout).unwrap();
+    // Since we specify the topic, we expect exactly one entry
+    assert!(m.topics().len() == 1);
+    m
+  }).collect();
+  use rdkafka::topic_partition_list::{TopicPartitionList, Offset};
+  let mut pl = TopicPartitionList::new();
+  for m in metas.iter() {
+    // We did assert before that we have 1 topic
+    let t = &m.topics()[0];
+    for p in t.partitions() {
+      if p.id() == partition {
+        //let w = c.fetch_watermarks(t.name(), p.id(), timeout).unwrap();
+        // Beginning, End, Stored, Invalid, Offset(i64)
+        let off = Offset::Offset(offset);
+        pl.add_partition_offset(t.name(), p.id(), off);
+        //println!("  t: {}  p: {}  w: {:?}  off: {:?}", t.name(), p.id(), w, off);
+      }
+    }
+  }
+  assert!(pl.count() == 1);
+  //.subscribe(&[topic]).unwrap();
+  c.assign(&pl).unwrap();
+  //let pos = c.position().unwrap();
+  //println!("pos: {:?}", pos);
+  loop {
+    match c.poll(timeout) {
+      Some(mm) => {
+        match mm {
+          Ok(m) => {
+            //println!("m: {:?}  {:?}", m.timestamp(), m.key().map(|x|x.len()));
+            //println!("pos: {:?}", c.position().unwrap());
+            use std::io::Write;
+            std::io::stdout().write(m.payload().unwrap()).unwrap();
+          }
+          Err(KafkaError::PartitionEOF(_p)) => {
+            //println!("EOF p: {}", p);
+            break;
+          }
+          Err(x) => panic!(x)
+        }
+      }
+      None => panic!("Poll returned None")
+    }
+  }
+}
+
 fn cmd_metadata(m: &clap::ArgMatches) {
-  let broker = m.value_of("b").unwrap();
+  let broker = m.value_of("broker").unwrap();
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("metadata.broker.list", broker);
   let client = rdkafka::client::Client::new(
@@ -254,14 +322,16 @@ fn main() {
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
   .args_from_usage("
-    -c=[CMD]  'p, c, m'
-    -b=[BROKER]
-    -t=[TOPIC]
-    -r, --rewind=[N]
+    -c,--command=[CMD]  'p, c, m, catp'
+    -b,--broker=[BROKER]
+    -t,--topic=[TOPIC]
+    -r,--rewind=[N]
+    -p,--partition=[N]
+    -o,--offset=[N]
   ");
   let m = app.get_matches();
   //println!("{:?}", m);
-  if let Some(c) = m.value_of("c") {
+  if let Some(c) = m.value_of("command") {
     match c {
       "p" => {
         cmd_produce(&m);
@@ -272,7 +342,10 @@ fn main() {
       "m" => {
         cmd_metadata(&m);
       }
-      _ => panic!()
+      "catp" => {
+        cmd_cat_payload(&m);
+      }
+      _ => panic!("unknown command")
     }
   }
 }
