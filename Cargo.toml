@@ -11,3 +11,6 @@ rdkafka = "0.17.0"
 ncurses = "5.97.0"
 terminal_size = "0.1.8"
 chrono = "0.4.6"
+
+[patch.crates-io]
+ncurses = { path = "../ncurses-rs" }
