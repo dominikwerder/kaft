@@ -328,9 +328,7 @@ fn cmd_metadata(m: &clap::ArgMatches) {
   let timeout = Some(std::time::Duration::from_millis(1000));
   let metadata = client.fetch_metadata(None, timeout).unwrap();
   let mut items: Vec<_> = metadata.topics().iter().map(|topic| {
-    if topic.name() == "__consumer_offsets" {
-      return "skipped".into()
-    }
+    if topic.name() == "__consumer_offsets" { return "  skipped __consumer_offsets".into() }
     let a: Vec<_> = topic.partitions().iter().map(|p| {
       let w = client.fetch_watermarks(topic.name(), p.id(), timeout).unwrap();
       format!("{:?} {:?}", p.id(), w)
