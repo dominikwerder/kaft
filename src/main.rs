@@ -139,9 +139,13 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
         Timestamp::CreateTime(t) => {
           let secs = (t / 1000) as i64;
           let ts = chrono::TimeZone::timestamp(&chrono::Utc, secs, ((t - 1000 * secs) * 1_000_000) as u32);
-          format!("ct {}", ts.format("%Y-%m-%d %H:%M"))
+          format!("ct {} {}", t, ts.format("%Y-%m-%d %H:%M"))
         }
-        Timestamp::LogAppendTime(t) => format!("at {:13.13}", t),
+        Timestamp::LogAppendTime(t) => {
+          let secs = (t / 1000) as i64;
+          let ts = chrono::TimeZone::timestamp(&chrono::Utc, secs, ((t - 1000 * secs) * 1_000_000) as u32);
+          format!("ct {} {}", t, ts.format("%Y-%m-%d %H:%M"))
+        }
       },
       //hs,
       match self.0.payload() {
