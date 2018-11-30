@@ -341,17 +341,57 @@ fn cmd_metadata(m: &clap::ArgMatches) {
   }
 }
 
+fn cmd_offsets_for_timestamp(m: &clap::ArgMatches) {
+  let broker = m.value_of("broker").unwrap();
+  let topic = m.value_of("topic").unwrap();
+  let timestamp = m.value_of("ts").unwrap();
+  let mut conf = rdkafka::config::ClientConfig::new();
+  conf.set("api.version.request", "true");
+  // TODO Do I really need a group id?
+  conf.set("group.id", "a");
+  conf.set("metadata.broker.list", broker);
+  use rdkafka::config::FromClientConfigAndContext;
+  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
+  let timeout = Some(std::time::Duration::from_millis(4000));
+  use rdkafka::topic_partition_list::{TopicPartitionList};
+
+  // By default, assign all currently known partitions before querying the offset for timestamp
+  let topics = [topic];
+  let metas: Vec<_> = topics.iter().map(|x| {
+    let m = c.fetch_metadata(Some(x), timeout).unwrap();
+    // Since we specify the topic, we expect exactly one entry
+    assert!(m.topics().len() == 1);
+    m
+  }).collect();
+  let mut pl = TopicPartitionList::new();
+  for m in metas.iter() {
+    for t in m.topics() {
+      //pl.add_topic_unassigned(topic);
+      for p in t.partitions() {
+        println!("  t: {}  p: {}", t.name(), p.id());
+        pl.add_partition(t.name(), p.id());
+      }
+    }
+  }
+  c.assign(&pl).unwrap();
+  //c.subscribe(&topics).unwrap();
+  let datetime = timestamp.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+  let offsets = c.offsets_for_timestamp(datetime.timestamp_millis(), timeout).unwrap();
+  println!("offsets: {:?}", offsets);
+}
+
 fn main() {
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
   .args_from_usage("
-    -c,--command=[CMD]  'p, c, m, catp'
+    -c,--command=[CMD]  'p, c, m, catp, offts'
     -b,--broker=[BROKER]
     -t,--topic=[TOPIC]
     -r,--rewind=[N]
     -p,--partition=[N]
     -o,--offset=[N]
     --nmsg=[N]
+    --ts=[N]
   ");
   let m = app.get_matches();
   //println!("{:?}", m);
@@ -368,6 +408,9 @@ fn main() {
       }
       "catp" => {
         cmd_cat_payload(&m);
+      }
+      "offts" => {
+        cmd_offsets_for_timestamp(&m);
       }
       _ => panic!("unknown command")
     }
