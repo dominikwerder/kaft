@@ -6,7 +6,6 @@ extern crate ncurses;
 extern crate terminal_size;
 extern crate chrono;
 
-//use std::cell::RefCell;
 use std::sync::{Mutex};
 use futures::{Future};
 use futures::sync::oneshot;
@@ -58,6 +57,22 @@ impl zookeeper::Watcher for ConnectHandler {
 }
 
 
+#[derive(Debug)]
+struct SomeOpaque {
+}
+
+static GLOBAL_OPAQUE: SomeOpaque = SomeOpaque {};
+
+impl rdkafka::util::IntoOpaque for SomeOpaque {
+  fn as_ptr(&self) -> *mut std::ffi::c_void {
+    &GLOBAL_OPAQUE as *const _ as *mut _
+  }
+  unsafe fn from_ptr(_: *mut std::ffi::c_void) -> Self {
+    SomeOpaque {}
+  }
+}
+
+
 struct Ctx {
 }
 
@@ -73,6 +88,13 @@ impl rdkafka::client::ClientContext for Ctx {
 impl rdkafka::consumer::ConsumerContext for Ctx {
   fn pre_rebalance<'a>(&self, rebalance: &rdkafka::consumer::Rebalance<'a>) {
     println!("pre_rebalance rebalance: {:?}", rebalance);
+  }
+}
+
+impl rdkafka::producer::ProducerContext for Ctx {
+  type DeliveryOpaque = SomeOpaque;
+  fn delivery(&self, _result: &rdkafka::message::DeliveryResult, _opaque: Self::DeliveryOpaque) {
+    println!("delivery");
   }
 }
 
@@ -229,12 +251,15 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
           }
           Err(KafkaError::PartitionEOF(_p)) => {
             //println!("EOF p: {}", p);
-            break
+            println!("EOF");
+            //break
           }
           Err(x) => panic!(x)
         }
       }
-      None => panic!("Poll returned None")
+      None => {
+        println!("Poll returned None, try again")
+      }
     }
   }
 }
@@ -380,11 +405,73 @@ fn cmd_offsets_for_timestamp(m: &clap::ArgMatches) {
   println!("offsets: {:?}", offsets);
 }
 
+fn cmd_forward(m: &clap::ArgMatches) {
+  use rdkafka::config::{FromClientConfigAndContext, ClientConfig};
+  let timeout = Some(std::time::Duration::from_millis(10000));
+
+  let broker = m.value_of("broker").unwrap();
+  let topic = m.value_of("topic").unwrap();
+  let broker_dst = m.value_of("broker-dst").unwrap();
+  let topic_dst = m.value_of("topic-dst").unwrap();
+  println!("broker: {}  topic: {}", broker, topic);
+  println!("broker_dst: {}  topic_dst: {}", broker_dst, topic_dst);
+
+  let c;
+  {
+    let mut conf = ClientConfig::new();
+    conf.set("api.version.request", "true");
+    conf.set("group.id", "a");
+    conf.set("metadata.broker.list", broker);
+    c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
+    c.subscribe(&[topic]).unwrap();
+  }
+
+  let p;
+  {
+    /*
+    let record = rdkafka::producer::future_producer::FutureRecord::to(topic)
+    .key("")
+    .payload(data);
+    */
+    let mut conf = ClientConfig::new();
+    conf.set("api.version.request", "true");
+    conf.set("metadata.broker.list", broker);
+    p = rdkafka::producer::base_producer::BaseProducer::from_config_and_context(&conf, Ctx {}).unwrap();
+    //p.send(record, 0).wait().unwrap().unwrap();
+  }
+
+  loop {
+    match c.poll(timeout) {
+      Some(mm) => {
+        match mm {
+          Ok(m) => {
+            //println!("m: {:?}  {:?}", m.timestamp(), m.key().map(|x|x.len()));
+            //println!("pos: {:?}", c.position().unwrap());
+            println!("{}", MsgShortView(&m));
+            let record = rdkafka::producer::base_producer::BaseRecord::with_opaque_to(topic_dst, SomeOpaque{});
+            let record = record.key(m.key().unwrap());
+            let record = if let Some(x) = m.payload() { record.payload(x) }
+            else { record.payload(&[0u8;0]) };
+            p.send(record).unwrap();
+          }
+          Err(KafkaError::PartitionEOF(_p)) => {
+            //println!("EOF p: {}", p);
+            println!("EOF");
+            //break
+          }
+          Err(x) => panic!(x)
+        }
+      }
+      None => panic!("Poll returned None")
+    }
+  }
+}
+
 fn main() {
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
   .args_from_usage("
-    -c,--command=[CMD]  'p, c, m, catp, offts'
+    -c,--command=[CMD]  'p, c, m, catp, offts, fwd'
     -b,--broker=[BROKER]
     -t,--topic=[TOPIC]
     -r,--rewind=[N]
@@ -392,6 +479,8 @@ fn main() {
     -o,--offset=[N]
     --nmsg=[N]
     --ts=[N]
+    --broker-dst=[BROKER]
+    --topic-dst=[TOPIC]
   ");
   let m = app.get_matches();
   //println!("{:?}", m);
@@ -411,6 +500,9 @@ fn main() {
       }
       "offts" => {
         cmd_offsets_for_timestamp(&m);
+      }
+      "fwd" => {
+        cmd_forward(&m);
       }
       _ => panic!("unknown command")
     }
