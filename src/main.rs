@@ -202,7 +202,7 @@ enum LimitConsumption {
   Count(u64),
 }
 
-fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: LimitConsumption) {
+fn kafka_consume(broker: &str, topic: &str, rewind: Option<i64>, nmsg: LimitConsumption) {
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("api.version.request", "true");
   conf.set("group.id", "a");
@@ -218,33 +218,40 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: LimitConsumption)
   let timeout = Some(std::time::Duration::from_millis(10000));
 
   let topics = [topic];
-  let metas: Vec<_> = topics.iter().map(|x| {
-    let m = c.fetch_metadata(Some(x), timeout).unwrap();
-    // Since we specify the topic, we expect exactly one entry
-    assert!(m.topics().len() == 1);
-    m
-  }).collect();
+  println!("broker: {}  topics: {:?}", broker, topics);
 
-  println!("broker: {}  topic: {}", broker, topic);
-  // Can either 'subscribe' or, if I need specific offsets 'assign'
-  use rdkafka::topic_partition_list::{TopicPartitionList, Offset};
-  let mut pl = TopicPartitionList::new();
-  for m in metas.iter() {
-    // We did assert before that we have 1 topic
-    let t = &m.topics()[0];
-    for p in t.partitions() {
-      let w = c.fetch_watermarks(t.name(), p.id(), timeout).unwrap();
-      // Beginning, End, Stored, Invalid, Offset(i64)
-      let ix = if w.1 >= rewind { w.1 - rewind } else { 0 };
-      let off = Offset::Offset(ix);
-      pl.add_partition_offset(t.name(), p.id(), off);
-      println!("  t: {}  p: {}  w: {:?}  off: {:?}", t.name(), p.id(), w, off);
+  /*
+  If we want to consume a topic without any rewind, or any limit on which partitions, then I use 'subscribe'.
+  Otherwise, we assign partitions explicitly.
+  */
+  if let Some(rewind) = rewind {
+    let metas: Vec<_> = topics.iter().map(|x| {
+      let m = c.fetch_metadata(Some(x), timeout).unwrap();
+      // Since we specify the topic, we expect exactly one entry
+      assert!(m.topics().len() == 1);
+      m
+    }).collect();
+    use rdkafka::topic_partition_list::{TopicPartitionList, Offset};
+    let mut pl = TopicPartitionList::new();
+    for m in metas.iter() {
+      // We did assert before that we have 1 topic
+      let t = &m.topics()[0];
+      for p in t.partitions() {
+        let w = c.fetch_watermarks(t.name(), p.id(), timeout).unwrap();
+        // Beginning, End, Stored, Invalid, Offset(i64)
+        let ix = if w.1 >= rewind { w.1 - rewind } else { 0 };
+        let off = Offset::Offset(ix);
+        pl.add_partition_offset(t.name(), p.id(), off);
+        println!("  t: {}  p: {}  w: {:?}  off: {:?}", t.name(), p.id(), w, off);
+      }
     }
+    assert!(pl.count() > 0, "No partitions to consume from");
+    c.assign(&pl).unwrap();
+    // At this point, the consumer position is still most likely 'invalid'.
   }
-  //.subscribe(&[topic]).unwrap();
-  c.assign(&pl).unwrap();
-  //let pos = c.position().unwrap();
-  //println!("pos: {:?}", pos);
+  else {
+    c.subscribe(&topics).unwrap();
+  }
   let mut count = 0;
   let timeout = Some(std::time::Duration::from_millis(500));
   loop {
@@ -252,7 +259,6 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: LimitConsumption)
       Some(mm) => {
         match mm {
           Ok(m) => {
-            //println!("pos: {:?}", c.position().unwrap());
             println!("{}", MsgShortView(&m));
             count += 1;
             match nmsg {
@@ -296,8 +302,8 @@ fn cmd_consume(m: &clap::ArgMatches) {
     }
   );
   let rewind = match m.value_of("rewind") {
-    Some(x) => x.parse::<i64>().unwrap(),
-    None => 0
+    Some(x) => Some(x.parse::<i64>().unwrap()),
+    None => None
   };
   kafka_consume(broker, topic, rewind, nmsg);
 }
