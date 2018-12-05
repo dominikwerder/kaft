@@ -8,7 +8,6 @@ extern crate chrono;
 extern crate signal_hook;
 
 use std::sync::{Mutex};
-use futures::{Future};
 use futures::sync::oneshot;
 use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consumer::{Consumer}};
 
@@ -16,6 +15,8 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
 #[cfg(test)] const TEST_ZOOKEEPER: &'static str = "ess01:2323";
 #[cfg(test)] const TEST_BROKER: &'static str = "ess01:2424";
 #[cfg(test)] const TEST_TOPIC: &'static str = "tmp_test_topic";
+
+const PRODUCER_FLUSH_TIMEOUT: u64 = 5000;
 
 fn millis(x: u64) -> Option<std::time::Duration> { Some(std::time::Duration::from_millis(x)) }
 
@@ -75,6 +76,15 @@ impl rdkafka::util::IntoOpaque for SomeOpaque {
   }
 }
 
+impl<'a> rdkafka::util::IntoOpaque for &'a SomeOpaque {
+  fn as_ptr(&self) -> *mut std::ffi::c_void {
+    self as *const _ as *mut _
+  }
+  unsafe fn from_ptr(_: *mut std::ffi::c_void) -> Self {
+    &GLOBAL_OPAQUE
+  }
+}
+
 
 struct Ctx {
   name: String,
@@ -102,14 +112,20 @@ impl rdkafka::client::ClientContext for Ctx {
 
 impl rdkafka::consumer::ConsumerContext for Ctx {
   fn pre_rebalance<'a>(&self, rebalance: &rdkafka::consumer::Rebalance<'a>) {
-    eprintln!("name: {}  pre_rebalance rebalance: {:?}", self.name, rebalance);
+    eprintln!("name: {}  pre_rebalance: {:?}", self.name, rebalance);
+  }
+  fn post_rebalance<'a>(&self, rebalance: &rdkafka::consumer::Rebalance<'a>) {
+    eprintln!("name: {}  post_rebalance: {:?}", self.name, rebalance);
+  }
+  fn commit_callback(&self, result: rdkafka::error::KafkaResult<()>, _offsets: *mut rdkafka::types::RDKafkaTopicPartitionList) {
+    eprintln!("name: {}  commit_callback: {:?}", self.name, result);
   }
 }
 
 impl rdkafka::producer::ProducerContext for Ctx {
-  type DeliveryOpaque = SomeOpaque;
-  fn delivery(&self, result: &rdkafka::message::DeliveryResult, _opaque: Self::DeliveryOpaque) {
-    eprintln!("name: {}  delivery result: {:?}", self.name, result);
+  type DeliveryOpaque = &'static SomeOpaque;
+  fn delivery(&self, result: &rdkafka::message::DeliveryResult, opaque: Self::DeliveryOpaque) {
+    eprintln!("name: {}  delivery result: {:?}  {:?}", self.name, result, opaque);
   }
 }
 
@@ -136,29 +152,52 @@ impl rdkafka::producer::ProducerContext for Ctx {
 }
 
 
-fn kafka_produce(broker: &str, topic: &str, data: &[u8]) {
+fn kafka_produce(broker: &str, topic: &str, ts: Option<i64>, data: &[u8], debug: bool) {
   let mut conf = rdkafka::config::ClientConfig::new();
+  if debug {
+    conf.set("debug", "all");
+  }
   conf.set("api.version.request", "true");
+  conf.set("group.id", "a");
   conf.set("metadata.broker.list", broker);
-  let record = rdkafka::producer::future_producer::FutureRecord::to(topic)
-  .key("")
-  .payload(data);
+  /*
+  Looking at the source code of BaseProducer it is clear that it instructs librdkafka to create a copy of the payload.
+  The FutureProducer seems to do the same.
+  A no-copy producer seems to be not available.
+  */
+  //conf.set("message.copy.max.bytes", "0");
   use rdkafka::config::FromClientConfigAndContext;
-  let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
-  p.send(record, 0).wait().unwrap().unwrap();
+  //let rec = rdkafka::producer::future_producer::FutureRecord::to(topic);
+  //let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
+  //p.send(rec, 0).wait().unwrap().unwrap();
+  let p = rdkafka::producer::base_producer::BaseProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
+  for _ in 0..1 {
+    type Key = ();
+    let rec = rdkafka::producer::base_producer::BaseRecord::<Key, _, _>::with_opaque_to(topic, &GLOBAL_OPAQUE);
+    //let rec = rec.key(&());
+    let rec = if let Some(x) = ts { rec.timestamp(x) } else { rec };
+    //let data = format!("{:06} {:?}", n, data);
+    let rec = rec.payload(data);
+    p.send(rec).unwrap();
+  }
   // Without flush, program shutdown will take significantly longer.
-  p.flush(millis(2000));
+  p.flush(millis(PRODUCER_FLUSH_TIMEOUT));
 }
 
 fn cmd_produce(m: &clap::ArgMatches) {
   println!("produce");
   let broker = m.value_of("broker").unwrap();
   let topic = m.value_of("topic").unwrap();
+  let ts = match m.value_of("ts") {
+    None => None,
+    Some(x) => Some(x.parse::<i64>().unwrap())
+  };
+  let debug = m.is_present("debug");
   let mut buf = vec![];
   use std::io::Read;
   std::io::stdin().read_to_end(&mut buf).unwrap();
   println!("broker: {}  topic: {}  len: {}", broker, topic, buf.len());
-  kafka_produce(broker, topic, &buf);
+  kafka_produce(broker, topic, ts, &buf, debug);
 }
 
 
@@ -454,7 +493,8 @@ fn cmd_offsets_for_timestamp(m: &clap::ArgMatches) {
 }
 
 
-// TODO share code with the other consumers
+// TODO share code with the other consumers.
+// TODO forward with correct timestamp works only if destination topic on broker is configured with CreateTime
 fn cmd_forward(m: &clap::ArgMatches) {
   use rdkafka::config::{FromClientConfigAndContext, ClientConfig};
 
@@ -509,10 +549,18 @@ fn cmd_forward(m: &clap::ArgMatches) {
         match mm {
           Ok(m) => {
             println!("{}", MsgShortView(&m));
-            let rec = rdkafka::producer::base_producer::BaseRecord::with_opaque_to(topic_dst, SomeOpaque{})
-            .key(m.key().unwrap());
+            let rec = rdkafka::producer::base_producer::BaseRecord::with_opaque_to(topic_dst, &GLOBAL_OPAQUE);
+            let rec = if let Some(key) = m.key() {
+              rec.key(key)
+            }
+            else { rec };
+            let rec = match m.timestamp() {
+              rdkafka::Timestamp::CreateTime(x) => rec.timestamp(x),
+              rdkafka::Timestamp::LogAppendTime(x) => rec.timestamp(x),
+              _ => rec
+            };
             let rec = if let Some(x) = m.payload() { rec.payload(x) } else { rec.payload(b"") };
-            //p.send(rec).unwrap();
+            p.send(rec).unwrap();
             count += 1;
             match nmsg {
               LimitConsumption::Count(n) => if count >= n {
@@ -542,7 +590,7 @@ fn cmd_forward(m: &clap::ArgMatches) {
       }
     }
   }
-  p.flush(timeout);
+  p.flush(millis(PRODUCER_FLUSH_TIMEOUT));
 }
 
 static GOT_SIGINT: std::sync::atomic::AtomicUsize = std::sync::atomic::ATOMIC_USIZE_INIT;
