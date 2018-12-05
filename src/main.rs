@@ -5,6 +5,7 @@ extern crate rdkafka;
 extern crate ncurses;
 extern crate terminal_size;
 extern crate chrono;
+extern crate signal_hook;
 
 use std::sync::{Mutex};
 use futures::{Future};
@@ -195,7 +196,13 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
   }
 }
 
-fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
+enum LimitConsumption {
+  Unlimited,
+  EOF,
+  Count(u64),
+}
+
+fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: LimitConsumption) {
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("api.version.request", "true");
   conf.set("group.id", "a");
@@ -218,6 +225,7 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
     m
   }).collect();
 
+  println!("broker: {}  topic: {}", broker, topic);
   // Can either 'subscribe' or, if I need specific offsets 'assign'
   use rdkafka::topic_partition_list::{TopicPartitionList, Offset};
   let mut pl = TopicPartitionList::new();
@@ -238,27 +246,40 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
   //let pos = c.position().unwrap();
   //println!("pos: {:?}", pos);
   let mut count = 0;
+  let timeout = Some(std::time::Duration::from_millis(500));
   loop {
     match c.poll(timeout) {
       Some(mm) => {
         match mm {
           Ok(m) => {
-            //println!("m: {:?}  {:?}", m.timestamp(), m.key().map(|x|x.len()));
             //println!("pos: {:?}", c.position().unwrap());
             println!("{}", MsgShortView(&m));
             count += 1;
-            if count >= nmsg { break }
+            match nmsg {
+              LimitConsumption::Count(n) => if count >= n {
+                eprintln!("Stop consumer because of limit {}", n);
+                break
+              }
+              _ => (),
+            }
           }
           Err(KafkaError::PartitionEOF(_p)) => {
-            //println!("EOF p: {}", p);
-            println!("EOF");
-            //break
+            match nmsg {
+              LimitConsumption::EOF => {
+                eprintln!("Stop consumer because of EOF");
+                break
+              }
+              _ => ()
+            }
           }
           Err(x) => panic!(x)
         }
       }
       None => {
-        println!("Poll returned None, try again")
+        if GOT_SIGINT.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+          eprintln!("Stop consumer because of SIGINT");
+          break
+        }
       }
     }
   }
@@ -267,12 +288,17 @@ fn kafka_consume(broker: &str, topic: &str, rewind: i64, nmsg: u64) {
 fn cmd_consume(m: &clap::ArgMatches) {
   let broker = m.value_of("broker").unwrap();
   let topic = m.value_of("topic").unwrap();
-  let nmsg = m.value_of("nmsg").map_or(1u64, |x|x.parse().unwrap());
+  let nmsg = m.value_of("nmsg").map_or(
+    LimitConsumption::Unlimited,
+    |x| {
+      if x == "EOF" { LimitConsumption::EOF }
+      else { LimitConsumption::Count(x.parse().unwrap()) }
+    }
+  );
   let rewind = match m.value_of("rewind") {
     Some(x) => x.parse::<i64>().unwrap(),
     None => 0
   };
-  println!("broker: {}  topic: {}", broker, topic);
   kafka_consume(broker, topic, rewind, nmsg);
 }
 
@@ -467,7 +493,14 @@ fn cmd_forward(m: &clap::ArgMatches) {
   }
 }
 
+static GOT_SIGINT: std::sync::atomic::AtomicUsize = std::sync::atomic::ATOMIC_USIZE_INIT;
+
 fn main() {
+  let signal = unsafe {
+    signal_hook::register(signal_hook::SIGINT, || {
+      GOT_SIGINT.store(1, std::sync::atomic::Ordering::SeqCst);
+    }).unwrap()
+  };
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
   .args_from_usage("
@@ -477,7 +510,7 @@ fn main() {
     -r,--rewind=[N]
     -p,--partition=[N]
     -o,--offset=[N]
-    --nmsg=[N]
+    --nmsg=[N | \"EOF\"] 'Limit number of messages'
     --ts=[N]
     --broker-dst=[BROKER]
     --topic-dst=[TOPIC]
@@ -507,4 +540,5 @@ fn main() {
       _ => panic!("unknown command")
     }
   }
+  signal_hook::unregister(signal);
 }
