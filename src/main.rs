@@ -17,6 +17,8 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
 #[cfg(test)] const TEST_BROKER: &'static str = "ess01:2424";
 #[cfg(test)] const TEST_TOPIC: &'static str = "tmp_test_topic";
 
+fn millis(x: u64) -> Option<std::time::Duration> { Some(std::time::Duration::from_millis(x)) }
+
 #[allow(unused)]
 struct ConnectHandler {
   on_connect: Mutex<Option<oneshot::Sender<i32>>>,
@@ -75,27 +77,39 @@ impl rdkafka::util::IntoOpaque for SomeOpaque {
 
 
 struct Ctx {
+  name: String,
+}
+
+impl Ctx {
+  fn new<T: AsRef<str>>(name: T) -> Self {
+    Self {
+      name: name.as_ref().into(),
+    }
+  }
 }
 
 impl rdkafka::client::ClientContext for Ctx {
   fn log(&self, level: rdkafka::config::RDKafkaLogLevel, fac: &str, message: &str) {
-    println!("level: {:?}  fac: {:?}  message: {:?}", level, fac, message);
+    eprintln!("name: {}  level: {:?}  fac: {:?}  message: {:?}", self.name, level, fac, message);
+  }
+  fn stats(&self, stats: rdkafka::Statistics) {
+    eprintln!("name: {}  stats: {:#?}", self.name, stats);
   }
   fn error(&self, error: rdkafka::error::KafkaError, reason: &str) {
-    println!("error: {:?}  {}", error, reason);
+    eprintln!("name: {}  client error: {:?}  reason: {}", self.name, error, reason);
   }
 }
 
 impl rdkafka::consumer::ConsumerContext for Ctx {
   fn pre_rebalance<'a>(&self, rebalance: &rdkafka::consumer::Rebalance<'a>) {
-    println!("pre_rebalance rebalance: {:?}", rebalance);
+    eprintln!("name: {}  pre_rebalance rebalance: {:?}", self.name, rebalance);
   }
 }
 
 impl rdkafka::producer::ProducerContext for Ctx {
   type DeliveryOpaque = SomeOpaque;
-  fn delivery(&self, _result: &rdkafka::message::DeliveryResult, _opaque: Self::DeliveryOpaque) {
-    println!("delivery");
+  fn delivery(&self, result: &rdkafka::message::DeliveryResult, _opaque: Self::DeliveryOpaque) {
+    eprintln!("name: {}  delivery result: {:?}", self.name, result);
   }
 }
 
@@ -130,8 +144,10 @@ fn kafka_produce(broker: &str, topic: &str, data: &[u8]) {
   .key("")
   .payload(data);
   use rdkafka::config::FromClientConfigAndContext;
-  let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx {}).unwrap();
+  let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
   p.send(record, 0).wait().unwrap().unwrap();
+  // Without flush, program shutdown will take significantly longer.
+  p.flush(millis(2000));
 }
 
 fn cmd_produce(m: &clap::ArgMatches) {
@@ -213,7 +229,7 @@ fn kafka_consume(broker: &str, topic: &str, rewind: Option<i64>, nmsg: LimitCons
   more difficult.
   */
   //let c = rdkafka::consumer::stream_consumer::StreamConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
-  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();  
+  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx::new("consumer")).unwrap();
 
   let timeout = Some(std::time::Duration::from_millis(10000));
 
@@ -319,7 +335,7 @@ fn cmd_cat_payload(m: &clap::ArgMatches) {
   conf.set("group.id", "a");
   conf.set("metadata.broker.list", broker);
   use rdkafka::config::FromClientConfigAndContext;
-  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();  
+  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx::new("consumer-cat")).unwrap();
   let timeout = Some(std::time::Duration::from_millis(10000));
   let topics = [topic];
   let metas: Vec<_> = topics.iter().map(|x| {
@@ -379,7 +395,7 @@ fn cmd_metadata(m: &clap::ArgMatches) {
     &conf,
     conf.create_native_config().unwrap(),
     rdkafka::types::RDKafkaType::RD_KAFKA_CONSUMER,
-    Ctx {},
+    Ctx::new("metadata-client"),
   ).unwrap();
 
   let timeout = Some(std::time::Duration::from_millis(1000));
@@ -408,7 +424,7 @@ fn cmd_offsets_for_timestamp(m: &clap::ArgMatches) {
   conf.set("group.id", "a");
   conf.set("metadata.broker.list", broker);
   use rdkafka::config::FromClientConfigAndContext;
-  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
+  let c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx::new("offts")).unwrap();
   let timeout = Some(std::time::Duration::from_millis(4000));
   use rdkafka::topic_partition_list::{TopicPartitionList};
 
@@ -437,66 +453,96 @@ fn cmd_offsets_for_timestamp(m: &clap::ArgMatches) {
   println!("offsets: {:?}", offsets);
 }
 
+
+// TODO share code with the other consumers
 fn cmd_forward(m: &clap::ArgMatches) {
   use rdkafka::config::{FromClientConfigAndContext, ClientConfig};
-  let timeout = Some(std::time::Duration::from_millis(10000));
 
   let broker = m.value_of("broker").unwrap();
   let topic = m.value_of("topic").unwrap();
   let broker_dst = m.value_of("broker-dst").unwrap();
   let topic_dst = m.value_of("topic-dst").unwrap();
-  println!("broker: {}  topic: {}", broker, topic);
-  println!("broker_dst: {}  topic_dst: {}", broker_dst, topic_dst);
+  eprintln!("forward:  {}/{}  ->  {}/{}", broker, topic, broker_dst, topic_dst);
+
+  let nmsg = m.value_of("nmsg").map_or(
+    LimitConsumption::Unlimited,
+    |x| {
+      if x == "EOF" { LimitConsumption::EOF }
+      else { LimitConsumption::Count(x.parse().unwrap()) }
+    }
+  );
+
+  let debug = m.is_present("debug");
 
   let c;
   {
     let mut conf = ClientConfig::new();
+    if debug {
+      conf.set("debug", "all");
+    }
     conf.set("api.version.request", "true");
     conf.set("group.id", "a");
     conf.set("metadata.broker.list", broker);
-    c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx {}).unwrap();
+    c = rdkafka::consumer::base_consumer::BaseConsumer::from_config_and_context(&conf, Ctx::new("consumer-fwd")).unwrap();
     c.subscribe(&[topic]).unwrap();
   }
 
+  // do I need more conf to set up a producer?
   let p;
   {
-    /*
-    let record = rdkafka::producer::future_producer::FutureRecord::to(topic)
-    .key("")
-    .payload(data);
-    */
     let mut conf = ClientConfig::new();
+    if debug {
+      conf.set("debug", "all");
+    }
     conf.set("api.version.request", "true");
-    conf.set("metadata.broker.list", broker);
-    p = rdkafka::producer::base_producer::BaseProducer::from_config_and_context(&conf, Ctx {}).unwrap();
-    //p.send(record, 0).wait().unwrap().unwrap();
+    conf.set("group.id", "a");
+    conf.set("metadata.broker.list", broker_dst);
+    p = rdkafka::producer::base_producer::BaseProducer::from_config_and_context(&conf, Ctx::new("producer-fwd")).unwrap();
   }
 
+  let mut count = 0;
+  let timeout = millis(500);
   loop {
+    p.poll(millis(1));
     match c.poll(timeout) {
       Some(mm) => {
         match mm {
           Ok(m) => {
-            //println!("m: {:?}  {:?}", m.timestamp(), m.key().map(|x|x.len()));
-            //println!("pos: {:?}", c.position().unwrap());
             println!("{}", MsgShortView(&m));
-            let record = rdkafka::producer::base_producer::BaseRecord::with_opaque_to(topic_dst, SomeOpaque{});
-            let record = record.key(m.key().unwrap());
-            let record = if let Some(x) = m.payload() { record.payload(x) }
-            else { record.payload(&[0u8;0]) };
-            p.send(record).unwrap();
+            let rec = rdkafka::producer::base_producer::BaseRecord::with_opaque_to(topic_dst, SomeOpaque{})
+            .key(m.key().unwrap());
+            let rec = if let Some(x) = m.payload() { rec.payload(x) } else { rec.payload(b"") };
+            //p.send(rec).unwrap();
+            count += 1;
+            match nmsg {
+              LimitConsumption::Count(n) => if count >= n {
+                eprintln!("Stop consumer because of limit {}", n);
+                break
+              }
+              _ => (),
+            }
           }
           Err(KafkaError::PartitionEOF(_p)) => {
-            //println!("EOF p: {}", p);
-            println!("EOF");
-            //break
+            match nmsg {
+              LimitConsumption::EOF => {
+                eprintln!("Stop consumer because of EOF");
+                break
+              }
+              _ => ()
+            }
           }
           Err(x) => panic!(x)
         }
       }
-      None => panic!("Poll returned None")
+      None => {
+        if GOT_SIGINT.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+          eprintln!("Stop consumer because of SIGINT");
+          break
+        }
+      }
     }
   }
+  p.flush(timeout);
 }
 
 static GOT_SIGINT: std::sync::atomic::AtomicUsize = std::sync::atomic::ATOMIC_USIZE_INIT;
@@ -509,18 +555,19 @@ fn main() {
   };
   let app = clap::App::new("kaft")
   .author("Dominik Werder <dominik.werder@gmail.com>")
-  .args_from_usage("
-    -c,--command=[CMD]  'p, c, m, catp, offts, fwd'
-    -b,--broker=[BROKER]
-    -t,--topic=[TOPIC]
-    -r,--rewind=[N]
-    -p,--partition=[N]
-    -o,--offset=[N]
-    --nmsg=[N | \"EOF\"] 'Limit number of messages'
-    --ts=[N]
-    --broker-dst=[BROKER]
-    --topic-dst=[TOPIC]
-  ");
+  .args_from_usage(r#"
+    -c --command [CMD]  'p, c, m, catp, offts, fwd'
+    -b --broker [BROKER]
+    -t --topic [TOPIC]
+    -r --rewind [N]
+    -p --partition [N]
+    -o --offset [N]
+    --nmsg [N | "EOF"] 'Limit number of messages'
+    --ts [N]
+    --broker-dst [BROKER]
+    --topic-dst [TOPIC]
+    --debug
+  "#);
   let m = app.get_matches();
   //println!("{:?}", m);
   if let Some(c) = m.value_of("command") {
