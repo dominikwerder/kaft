@@ -152,7 +152,7 @@ impl rdkafka::producer::ProducerContext for Ctx {
 }
 
 
-fn kafka_produce(broker: &str, topic: &str, ts: Option<i64>, data: &[u8], debug: bool) {
+fn kafka_produce(broker: &str, topic: &str, ts: Option<i64>, data: &[u8], n_copies: u64, debug: bool) {
   let mut conf = rdkafka::config::ClientConfig::new();
   if debug {
     conf.set("debug", "all");
@@ -171,7 +171,7 @@ fn kafka_produce(broker: &str, topic: &str, ts: Option<i64>, data: &[u8], debug:
   //let p = rdkafka::producer::future_producer::FutureProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
   //p.send(rec, 0).wait().unwrap().unwrap();
   let p = rdkafka::producer::base_producer::BaseProducer::from_config_and_context(&conf, Ctx::new("producer-single")).unwrap();
-  for _ in 0..1 {
+  for _ in 0..n_copies {
     type Key = ();
     let rec = rdkafka::producer::base_producer::BaseRecord::<Key, _, _>::with_opaque_to(topic, &GLOBAL_OPAQUE);
     //let rec = rec.key(&());
@@ -193,11 +193,19 @@ fn cmd_produce(m: &clap::ArgMatches) {
     Some(x) => Some(x.parse::<i64>().unwrap())
   };
   let debug = m.is_present("debug");
+  // If --nmsg is numeric, create copies
+  // TODO improve this tool.. may want to vary at least something in the copies.
+  let n_copies = m.value_of("ncopies").map_or(
+    1,
+    |x| {
+      x.parse::<u64>().unwrap_or(1)
+    }
+  );
   let mut buf = vec![];
   use std::io::Read;
   std::io::stdin().read_to_end(&mut buf).unwrap();
   println!("broker: {}  topic: {}  len: {}", broker, topic, buf.len());
-  kafka_produce(broker, topic, ts, &buf, debug);
+  kafka_produce(broker, topic, ts, &buf, n_copies, debug);
 }
 
 
@@ -611,6 +619,7 @@ fn main() {
     -p --partition [N]
     -o --offset [N]
     --nmsg [N | "EOF"] 'Limit number of messages'
+    --ncopies [N] 'For producer'
     --ts [N]
     --broker-dst [BROKER]
     --topic-dst [TOPIC]
