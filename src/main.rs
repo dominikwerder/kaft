@@ -136,7 +136,9 @@ impl rdkafka::producer::ProducerContext for Ctx {
     &conf,
     conf.create_native_config().unwrap(),
     rdkafka::types::RDKafkaType::RD_KAFKA_CONSUMER,
-    Ctx {},
+    Ctx {
+      name: "test_context".into(),
+    },
   ).unwrap();
 
   let timeout = Some(std::time::Duration::from_millis(1000));
