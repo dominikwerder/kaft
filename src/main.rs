@@ -28,7 +28,7 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
 }
 
 #[test] fn test_rmp_serde() {
-  #[derive(serde_derive::Serialize, serde_derive::Deserialize)]
+  #[derive(Debug, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
   struct A {
     n: u16,
     s: String,
@@ -37,6 +37,10 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
   let mut buf = vec![];
   rmp_serde::encode::write_named(&mut buf, &a).unwrap();
   assert_eq!(buf, rmp_serde::encode::to_vec_named(&a).unwrap());
+  assert_eq!(
+    rmp_serde::decode::from_slice::<A>(&buf).unwrap(),
+    a,
+  );
 }
 
 // default zookeeper port is 2181, address requires a port
