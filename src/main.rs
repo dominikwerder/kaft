@@ -48,6 +48,7 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
     s: String,
   }
   let a = A { n: 123, s: "hi".into() };
+  assert_eq!(hex::encode(serde_cbor::ser::to_vec(&a).unwrap()), "a2616e187b6173626869".to_string());
   assert_eq!(a, serde_cbor::de::from_slice::<A>(&serde_cbor::ser::to_vec(&a).unwrap()).unwrap());
   assert_eq!(
     serde_cbor::de::from_slice::<serde_cbor::Value>(&serde_cbor::ser::to_vec(&a).unwrap()).unwrap(),
