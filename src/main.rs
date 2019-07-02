@@ -2,7 +2,6 @@ extern crate clap;
 extern crate futures;
 extern crate zookeeper;
 extern crate rdkafka;
-extern crate ncurses;
 extern crate terminal_size;
 extern crate chrono;
 extern crate signal_hook;
@@ -10,6 +9,35 @@ extern crate signal_hook;
 use std::sync::{Mutex};
 use futures::sync::oneshot;
 use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consumer::{Consumer}};
+
+#[test] fn test_rmp() {
+  let mut bufs = vec![vec![]; 5];
+
+  rmp::encode::write_pfix(&mut bufs[0], 42).unwrap();
+  rmp::encode::write_u8(&mut bufs[1], 42).unwrap();
+  rmp::encode::write_u16(&mut bufs[2], 42).unwrap();
+  rmp::encode::write_u32(&mut bufs[3], 42).unwrap();
+  rmp::encode::write_u64(&mut bufs[4], 42).unwrap();
+
+  assert_eq!([0x2a], bufs[0][..]);
+  assert_eq!([0xcc, 0x2a], bufs[1][..]);
+  assert_eq!([0xcd, 0x00, 0x2a], bufs[2][..]);
+  assert_eq!([0xce, 0x00, 0x00, 0x00, 0x2a], bufs[3][..]);
+  assert_eq!([0xcf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a], bufs[4][..]);
+
+}
+
+#[test] fn test_rmp_serde() {
+  #[derive(serde_derive::Serialize, serde_derive::Deserialize)]
+  struct A {
+    n: u16,
+    s: String,
+  }
+  let a = A { n: 123, s: "hi".into() };
+  let mut buf = vec![];
+  rmp_serde::encode::write_named(&mut buf, &a).unwrap();
+  assert!(buf == rmp_serde::encode::to_vec_named(&a).unwrap());
+}
 
 // default zookeeper port is 2181, address requires a port
 #[cfg(test)] const TEST_ZOOKEEPER: &'static str = "ess01:2323";
