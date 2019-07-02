@@ -268,8 +268,7 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
     let columns = terminal_size::terminal_size().unwrap().0 .0 as usize;
     //println!("columns: {}", columns);
     let _hs: Vec<_> = (0..64).into_iter().map(|i| self.0.headers().map(|hs| hs.get(i))).filter(|x| x.is_some()).map(|x| x.unwrap()).collect();
-    let s1 = format!("p/o: {}/{} {} {}",
-      //self.0.topic(),
+    let s1 = format!("\n███  p/o: {}/{} {} {}  {}",
       self.0.partition(), self.0.offset(),
       //self.0.key().map(|x|x.len()),
       match self.0.timestamp() {
@@ -290,6 +289,7 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
         Some(x) => format!("{:6.6}", x.len()),
         None => "NA".into()
       },
+      self.0.topic(),
     );
     let datastring = match self.0.payload() {
       Some(x) => {
@@ -307,7 +307,8 @@ impl<'a, H: Headers, M: 'a + Message<Headers=H>> std::fmt::Display for MsgShortV
       }
       None => "None".into()
     };
-    write!(f, "{} {:.w$}", s1, datastring, w = columns - s1.len() - 1)
+    //write!(f, "{}\n{:.w$}", s1, datastring, w = columns - 0 * (s1.len() + 1))
+    write!(f, "{}\n{}", s1, datastring)
   }
 }
 
