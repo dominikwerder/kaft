@@ -37,9 +37,26 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
   let mut buf = vec![];
   rmp_serde::encode::write_named(&mut buf, &a).unwrap();
   assert_eq!(buf, rmp_serde::encode::to_vec_named(&a).unwrap());
+  assert_eq!(a, rmp_serde::decode::from_slice::<A>(&buf).unwrap());
+  assert!(rmpv::decode::read_value(&mut std::io::Cursor::new(&buf)).is_ok());
+}
+
+#[test] fn test_cbor_serde() {
+  #[derive(Debug, PartialEq, serde_derive::Serialize, serde_derive::Deserialize)]
+  struct A {
+    n: u16,
+    s: String,
+  }
+  let a = A { n: 123, s: "hi".into() };
+  assert_eq!(a, serde_cbor::de::from_slice::<A>(&serde_cbor::ser::to_vec(&a).unwrap()).unwrap());
   assert_eq!(
-    rmp_serde::decode::from_slice::<A>(&buf).unwrap(),
-    a,
+    serde_cbor::de::from_slice::<serde_cbor::Value>(&serde_cbor::ser::to_vec(&a).unwrap()).unwrap(),
+    serde_cbor::Value::Object({
+      let mut x = std::collections::BTreeMap::new();
+      x.insert(serde_cbor::ObjectKey::String("n".into()), serde_cbor::Value::U64(123));
+      x.insert(serde_cbor::ObjectKey::String("s".into()), serde_cbor::Value::String("hi".into()));
+      x
+    })
   );
 }
 
