@@ -317,7 +317,7 @@ enum LimitConsumption {
   Count(u64),
 }
 
-fn kafka_consume(broker: &str, topic: &str, rewind: Option<i64>, nmsg: LimitConsumption) {
+fn kafka_consume(broker: &str, topics: &[&str], rewind: Option<i64>, nmsg: LimitConsumption) {
   let mut conf = rdkafka::config::ClientConfig::new();
   conf.set("api.version.request", "true");
   conf.set("group.id", "a");
@@ -332,7 +332,6 @@ fn kafka_consume(broker: &str, topic: &str, rewind: Option<i64>, nmsg: LimitCons
 
   let timeout = Some(std::time::Duration::from_millis(10000));
 
-  let topics = [topic];
   println!("broker: {}  topics: {:?}", broker, topics);
 
   /*
@@ -408,7 +407,7 @@ fn kafka_consume(broker: &str, topic: &str, rewind: Option<i64>, nmsg: LimitCons
 
 fn cmd_consume(m: &clap::ArgMatches) {
   let broker = m.value_of("broker").unwrap();
-  let topic = m.value_of("topic").unwrap();
+  let topics = m.values_of("topic").unwrap();
   let nmsg = m.value_of("nmsg").map_or(
     LimitConsumption::Unlimited,
     |x| {
@@ -420,7 +419,7 @@ fn cmd_consume(m: &clap::ArgMatches) {
     Some(x) => Some(x.parse::<i64>().unwrap()),
     None => None
   };
-  kafka_consume(broker, topic, rewind, nmsg);
+  kafka_consume(broker, &topics.map(|x|x).collect::<Vec<_>>(), rewind, nmsg);
 }
 
 fn cmd_cat_payload(m: &clap::ArgMatches) {
@@ -666,7 +665,7 @@ fn main() {
   .args_from_usage(r#"
     -c --command [CMD]  'p, c, m, catp, offts, fwd'
     -b --broker [BROKER]
-    -t --topic [TOPIC]
+    -t --topic [TOPIC]...
     -r --rewind [N]
     -p --partition [N]
     -o --offset [N]
