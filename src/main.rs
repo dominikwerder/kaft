@@ -1,30 +1,30 @@
-extern crate clap;
-extern crate futures;
-extern crate zookeeper;
-extern crate rdkafka;
-extern crate terminal_size;
-extern crate chrono;
-extern crate signal_hook;
-
 use std::sync::{Mutex};
 use futures::sync::oneshot;
 use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consumer::{Consumer}};
 
 #[test] fn test_rmp() {
-  let mut bufs = vec![vec![]; 5];
+  let mut bufs = vec![vec![]; 7];
 
   rmp::encode::write_pfix(&mut bufs[0], 42).unwrap();
   rmp::encode::write_u8(&mut bufs[1], 42).unwrap();
   rmp::encode::write_u16(&mut bufs[2], 42).unwrap();
   rmp::encode::write_u32(&mut bufs[3], 42).unwrap();
   rmp::encode::write_u64(&mut bufs[4], 42).unwrap();
+  rmp::encode::write_uint(&mut bufs[5], 42).unwrap();
+  rmp::encode::write_sint(&mut bufs[6], 42).unwrap();
 
   assert_eq!([0x2a], bufs[0][..]);
   assert_eq!([0xcc, 0x2a], bufs[1][..]);
   assert_eq!([0xcd, 0x00, 0x2a], bufs[2][..]);
   assert_eq!([0xce, 0x00, 0x00, 0x00, 0x2a], bufs[3][..]);
   assert_eq!([0xcf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a], bufs[4][..]);
+  assert_eq!(&bufs[5], &bufs[0]);
+  assert_eq!(&bufs[6], &bufs[0]);
 
+  assert_eq!(
+    { let mut b = vec![]; rmp::encode::write_sint(&mut b, -32).unwrap(); b },
+    { let mut b = vec![]; rmp::encode::write_nfix(&mut b, -32).unwrap(); b },
+  );
 }
 
 #[test] fn test_rmp_serde() {
@@ -36,7 +36,7 @@ use rdkafka::{error::KafkaError, message::{Message, Headers, Timestamp}, consume
   let a = A { n: 123, s: "hi".into() };
   let mut buf = vec![];
   rmp_serde::encode::write_named(&mut buf, &a).unwrap();
-  assert!(buf == rmp_serde::encode::to_vec_named(&a).unwrap());
+  assert_eq!(buf, rmp_serde::encode::to_vec_named(&a).unwrap());
 }
 
 // default zookeeper port is 2181, address requires a port
